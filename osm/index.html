@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>지형 인식 바람 시뮬레이터</title>
+
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19/dist/lil-gui.umd.min.js"></script>
+
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%; height: 100%;
+      overflow: hidden;
+      background: #060a14;
+      font-family: 'Segoe UI', monospace, sans-serif;
+    }
+
+    /* ── 지도 ── */
+    #map {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100vh;
+    }
+
+    /* ── 캔버스 오버레이 2종 ── */
+    #sim-canvas, #vent-canvas {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+
+    /* 바람 라인 (최종 합성 출력) */
+    #sim-canvas   { z-index: 400; }
+
+    /* 확산원 아이콘 (선명하게) */
+    #vent-canvas  { z-index: 402; }
+
+    /* ── 상단 정보 바 ── */
+    #info-bar {
+      position: fixed;
+      top: 14px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 500;
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 6px;
+      pointer-events: none;
+      flex-wrap: nowrap;
+      white-space: nowrap;
+    }
+
+    .badge {
+      background: rgba(4, 8, 20, 0.85);
+      border: 1px solid rgba(60, 130, 255, 0.25);
+      border-radius: 24px;
+      padding: 5px 20px;
+      font-size: 12px;
+      color: #8ab0e0;
+      box-shadow: 0 2px 14px rgba(0,0,0,0.65);
+      white-space: nowrap;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+
+    #weather-badge {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+    }
+
+    #weather-badge .spd {
+      color: #c8e0ff;
+      font-weight: 700;
+      font-size: 15px;
+    }
+
+    #status-label {
+      position: fixed;
+      top: 54px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 500;
+      font-size: 11px;
+      color: #7aabcc;
+      opacity: 0;
+      transition: opacity 0.4s;
+      pointer-events: none;
+    }
+
+    /* ── 좌하단 범례 ── */
+    #legend {
+      position: fixed;
+      bottom: 18px; left: 14px;
+      z-index: 500;
+      background: rgba(4, 8, 20, 0.82);
+      border: 1px solid rgba(60, 130, 255, 0.15);
+      border-radius: 10px;
+      padding: 12px 16px;
+      font-size: 11px;
+      color: #5888b0;
+      pointer-events: none;
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      line-height: 1.8;
+    }
+
+    /* ── 주소 검색 ── */
+    #location-search-wrap {
+      position: relative;
+      pointer-events: all;   /* info-bar의 pointer-events:none 오버라이드 */
+    }
+
+    #location-label {
+      cursor: pointer;
+      pointer-events: all;
+      transition: background 0.15s, color 0.15s;
+    }
+    #location-label:hover {
+      background: rgba(20, 40, 80, 0.92);
+      color: #c8e0ff;
+    }
+
+    #search-box {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 14px;
+      min-width: 230px;
+      pointer-events: all;
+    }
+    #search-box.active { display: flex; }
+
+    #search-input {
+      background: none;
+      border: none;
+      outline: none;
+      color: #c8e0ff;
+      font-size: 13px;
+      font-family: 'Segoe UI', monospace, sans-serif;
+      width: 100%;
+      caret-color: #5ab4ff;
+      pointer-events: all;
+    }
+    #search-input::placeholder { color: #3a5a78; }
+
+    #search-close {
+      cursor: pointer;
+      color: #3a5a78;
+      font-size: 13px;
+      flex-shrink: 0;
+      line-height: 1;
+      transition: color 0.1s;
+      pointer-events: all;
+    }
+    #search-close:hover { color: #c8e0ff; }
+
+    #search-results {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      min-width: 290px;
+      background: rgba(4, 8, 20, 0.94);
+      border: 1px solid rgba(60, 130, 255, 0.22);
+      border-radius: 10px;
+      overflow: hidden;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      z-index: 700;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.7);
+      pointer-events: all;
+    }
+    #search-results.active { display: block; }
+
+    .sr-item {
+      padding: 10px 16px;
+      cursor: pointer;
+      pointer-events: all;
+      border-bottom: 1px solid rgba(60, 130, 255, 0.07);
+      transition: background 0.1s;
+    }
+    .sr-item:last-child { border-bottom: none; }
+    .sr-item:hover { background: rgba(30, 60, 130, 0.55); }
+    .sr-item .sr-name {
+      font-size: 12.5px;
+      color: #b0d0f0;
+      font-weight: 600;
+    }
+    .sr-item .sr-detail {
+      font-size: 10px;
+      color: #3a5a78;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sr-empty {
+      padding: 12px 16px;
+      font-size: 11px;
+      color: #3a5a78;
+      text-align: center;
+    }
+
+    /* 바람 속도 바: 형광 하늘색 */
+    #legend .spd-bar {
+      width: 140px; height: 5px; border-radius: 3px;
+      background: linear-gradient(to right,
+        hsl(195,80%,25%),
+        hsl(195,95%,50%),
+        hsl(195,100%,75%));
+      box-shadow: 0 0 5px hsl(195,100%,60%);
+      margin-bottom: 5px;
+    }
+
+    /* 농도 바: 주황(발원점) → 회색(고농도) → 연한 회색(희석 소멸) */
+    #legend .conc-bar {
+      width: 140px; height: 5px; border-radius: 3px;
+      background: linear-gradient(to right,
+        hsl(22,100%,64%),
+        hsl(22,50%,40%),
+        hsl(0,0%,30%),
+        hsl(0,0%,72%));
+      margin: 6px 0 3px;
+    }
+    #legend .conc-labels {
+      display: flex;
+      justify-content: space-between;
+      width: 140px;
+      font-size: 9px;
+      color: #3a6080;
+      margin-bottom: 6px;
+    }
+
+    #legend .spd-labels {
+      display: flex;
+      justify-content: space-between;
+      width: 140px;
+      font-size: 9px;
+      color: #3a6080;
+      margin-bottom: 8px;
+    }
+
+    .leg-row { display: flex; align-items: center; gap: 8px; margin-top: 3px; }
+    .leg-dot  { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+    .leg-line {
+      width: 22px; height: 2px;
+      border-radius: 1px;
+      flex-shrink: 0;
+    }
+
+    /* ── 하단 힌트 ── */
+    #hint {
+      position: fixed;
+      bottom: 22px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 500;
+      background: rgba(4, 8, 20, 0.72);
+      border: 1px solid rgba(60, 130, 255, 0.13);
+      border-radius: 20px;
+      padding: 5px 20px;
+      font-size: 10.5px;
+      color: #4a6888;
+      pointer-events: none;
+      white-space: nowrap;
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+    }
+
+    /* ── 지리정보 토글 배지 ── */
+    .geo-toggle {
+      pointer-events: all;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      user-select: none;
+      padding: 5px 16px;
+    }
+
+    .geo-toggle input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 13px; height: 13px;
+      border: 1px solid rgba(60, 130, 255, 0.5);
+      border-radius: 3px;
+      background: rgba(4, 8, 20, 0.6);
+      cursor: pointer;
+      flex-shrink: 0;
+      position: relative;
+      transition: background 0.15s;
+    }
+    .geo-toggle input[type="checkbox"]:checked {
+      background: rgba(60, 130, 255, 0.65);
+    }
+    .geo-toggle input[type="checkbox"]:checked::after {
+      content: '';
+      position: absolute;
+      top: 1px; left: 3px;
+      width: 5px; height: 8px;
+      border: 2px solid #fff;
+      border-top: none; border-left: none;
+      transform: rotate(45deg);
+    }
+
+    /* ── lil-gui ── */
+    .lil-gui.root {
+      position: fixed !important;
+      top: 10px !important;
+      right: 10px !important;
+      z-index: 600 !important;
+    }
+
+    /* ── 시간 시뮬레이션 슬라이더 ── */
+    #time-sim-bar {
+      position: fixed;
+      bottom: 58px; left: 50%;
+      transform: translateX(-50%);
+      z-index: 500;
+      background: rgba(4, 8, 20, 0.88);
+      border: 1px solid rgba(60, 130, 255, 0.22);
+      border-radius: 16px;
+      padding: 10px 22px 12px;
+      min-width: 340px;
+      max-width: 480px;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      pointer-events: all;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+    }
+
+    #time-sim-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    #time-sim-label {
+      font-size: 12px;
+      color: #7aabcc;
+      font-family: 'Segoe UI', monospace, sans-serif;
+    }
+
+    #time-reset-btn {
+      background: none;
+      border: 1px solid rgba(60, 130, 255, 0.3);
+      border-radius: 10px;
+      padding: 2px 10px;
+      font-size: 10.5px;
+      color: #5888b0;
+      cursor: pointer;
+      font-family: 'Segoe UI', monospace, sans-serif;
+      opacity: 0.35;
+      pointer-events: none;
+      transition: background 0.15s, color 0.15s, opacity 0.2s;
+      white-space: nowrap;
+    }
+    #time-reset-btn:hover { background: rgba(30,60,120,0.5); color: #c8e0ff; }
+
+    /* 슬라이더 트랙 · 썸 */
+    #time-slider {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      border-radius: 2px;
+      background: linear-gradient(to right,
+        hsl(210,80%,30%) 0%,
+        hsl(35,100%,55%) 71%,   /* 17h = 71% */
+        hsl(18,100%,45%) 79%,   /* 19h = 79% */
+        hsl(210,40%,18%) 100%);
+      outline: none;
+      cursor: pointer;
+    }
+    #time-slider::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #5ab4ff;
+      border: 2px solid rgba(4,8,20,0.9);
+      box-shadow: 0 0 6px rgba(90,180,255,0.7);
+      cursor: grab;
+    }
+    #time-slider::-moz-range-thumb {
+      width: 16px; height: 16px;
+      border-radius: 50%;
+      background: #5ab4ff;
+      border: 2px solid rgba(4,8,20,0.9);
+      box-shadow: 0 0 6px rgba(90,180,255,0.7);
+      cursor: grab;
+    }
+
+    #time-tick-row {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 5px;
+      padding: 0 1px;
+    }
+    #time-tick-row span {
+      font-size: 9px;
+      color: #2e4a60;
+      font-family: 'Segoe UI', monospace, sans-serif;
+    }
+
+    /* ── 기상 동기화 버튼 (lil-gui 왼쪽) ── */
+    #wind-sync-btn {
+      position: fixed;
+      top: 10px;
+      right: 265px;
+      z-index: 590;
+      background: rgba(4, 8, 20, 0.85);
+      border: 1px solid rgba(60, 130, 255, 0.25);
+      border-radius: 24px;
+      padding: 5px 14px;
+      font-size: 11px;
+      color: #8ab0e0;
+      cursor: pointer;
+      font-family: 'Segoe UI', monospace, sans-serif;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      white-space: nowrap;
+      transition: background 0.15s, color 0.15s;
+    }
+    #wind-sync-btn:hover  { background: rgba(30, 60, 120, 0.90); color: #c8e0ff; }
+    #wind-sync-btn:active { background: rgba(60, 100, 200, 0.80); }
+    #wind-sync-btn:disabled { opacity: 0.45; cursor: default; }
+  </style>
+</head>
+
+<body>
+  <div id="map"></div>
+  <button id="wind-sync-btn">🔄 기상 동기화</button>
+
+  <!-- 캔버스 레이어: sim-canvas(바람+연기), vent-canvas(발원지 아이콘) -->
+  <canvas id="sim-canvas"></canvas>
+  <canvas id="vent-canvas"></canvas>
+
+  <!-- 상단 정보 바 (한 줄) -->
+  <div id="info-bar">
+    <!-- 위치 배지 + 주소 검색 -->
+    <div id="location-search-wrap">
+      <div class="badge" id="location-label">📍 대한민국</div>
+      <div class="badge" id="search-box">
+        <span style="color:#5ab4ff;font-size:14px;flex-shrink:0">🔍</span>
+        <input type="text" id="search-input" placeholder="주소 검색..." autocomplete="off" spellcheck="false">
+        <span id="search-close">✕</span>
+      </div>
+      <div id="search-results"></div>
+    </div>
+    <div class="badge" id="weather-badge">
+      💨 &nbsp;<span class="spd" id="w-wind">-- m/s</span>
+    </div>
+    <!-- 지리 정보 토글 -->
+    <label class="badge geo-toggle" id="geo-toggle-badge">
+      <input type="checkbox" id="geo-check" checked>
+      <span>지리 정보</span>
+    </label>
+  </div>
+  <!-- 상태 메시지 (info-bar 아래 독립 배치) -->
+  <div class="badge" id="status-label"></div>
+
+  <!-- 우하단 범례 -->
+  <div id="legend">
+    <div class="spd-bar"></div>
+    <div class="spd-labels"><span>저속</span><span>고속</span></div>
+    <div class="leg-row">
+      <div class="leg-line" style="background: hsl(195,100%,62%); box-shadow: 0 0 4px hsl(195,100%,55%)"></div>
+      <span>배경 기류 (형광 하늘색)</span>
+    </div>
+    <div class="conc-bar"></div>
+    <div class="conc-labels"><span>발원점</span><span>희석 소멸</span></div>
+    <div class="leg-row">
+      <div class="leg-line" style="background: linear-gradient(to right, hsl(22,100%,64%), hsl(0,0%,30%), hsl(0,0%,72%))"></div>
+      <span>누출 기체 (주황→짙은회색→연한색)</span>
+    </div>
+    <div class="leg-row">
+      <div class="leg-dot" style="background: hsl(0,0%,20%)"></div>
+      <span>확산원 (클릭으로 배치)</span>
+    </div>
+    <div class="leg-row" style="margin-top:6px; font-size:9px; color:#2a5060">
+      ⛰ 지형: 오르막 감속 · 내리막 가속
+    </div>
+  </div>
+
+  <!-- 시간 시뮬레이션 슬라이더 -->
+  <div id="time-sim-bar">
+    <div id="time-sim-header">
+      <span id="time-sim-label">⏱ 자동 (현재 시간)</span>
+      <button id="time-reset-btn">↺ 현재 시간으로</button>
+    </div>
+    <input type="range" id="time-slider" min="0" max="1439" step="1" value="720">
+    <div id="time-tick-row">
+      <span>00:00</span><span>03</span><span>06</span><span>09</span>
+      <span>12:00</span><span>15</span><span>18</span><span>21</span><span>24:00</span>
+    </div>
+  </div>
+
+  <!-- 하단 힌트 -->
+  <div id="hint">
+    클릭: 누출원 추가 &nbsp;|&nbsp; 드래그: 지도 이동
+  </div>
+
+  <script>
+    void function () {
+      const s = document.createElement('script');
+      s.type = 'module';
+      s.src  = './app.js?v=' + Date.now();
+      document.body.appendChild(s);
+    }();
+  </script>
+</body>
+</html>
