@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fluid Grid — deck.gl Style</title>
+
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0a;
+      overflow: hidden;
+      font-family: monospace;
+    }
+
+    #canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    /* HUD — bottom-left hints */
+    #hud {
+      position: fixed;
+      bottom: 18px;
+      left: 20px;
+      color: #334455;
+      font-size: 11px;
+      line-height: 1.7;
+      pointer-events: none;
+      user-select: none;
+    }
+
+    #hud span { color: #445566; }
+  </style>
+
+  <!--
+    lil-gui: loaded as UMD so it registers the global `lil` object
+    before ES-module code runs.  Must come BEFORE the importmap.
+  -->
+  <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19/dist/lil-gui.umd.min.js"></script>
+
+  <!--
+    Import-map: lets the ES modules resolve bare "three" specifiers
+    without a bundler.
+  -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three":          "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/":  "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+
+<body>
+  <canvas id="canvas"></canvas>
+
+  <div id="hud">
+    <span>드래그</span> 유체 주입 &nbsp;|&nbsp;
+    <span>스크롤</span> 줌 &nbsp;|&nbsp;
+    <span>우클릭 드래그</span> 팬 &nbsp;|&nbsp;
+    <span>우측 상단 패널</span> 파라미터 조절
+  </div>
+
+  <!-- Main entry-point (ES module) -->
+  <script type="module" src="main.js"></script>
+</body>
+</html>
