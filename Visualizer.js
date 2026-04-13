@@ -228,7 +228,9 @@ export class Visualizer {
    */
   setupGUI(engine) {
     /* global lil */
-    const gui = new lil.GUI({ title: '⚙ Fluid Controls', width: 220 });
+    const isMobile = window.matchMedia('(max-width: 640px)').matches;
+    const gui = new lil.GUI({ title: '⚙ Fluid Controls', width: isMobile ? 180 : 220 });
+    if (isMobile) gui.close();
 
     gui.add(this.params, 'diffusionRate', 0.000005, 0.0006, 0.000005)
        .name('확산 속도')

@@ -290,6 +290,8 @@ const params = {
 const autoInfo = { windSpeed: '--', autoScale: '--', elevation: '--' };
 
 const gui = new lil.GUI({ title: '🛰 지형 시뮬레이터' });
+// 모바일에서는 GUI 패널 기본 접힘
+if (window.matchMedia('(max-width: 640px)').matches) gui.close();
 
 const infoFolder = gui.addFolder('📡 실시간 정보');
 infoFolder.add(autoInfo, 'windSpeed').name('대표 풍속 m/s').disable();

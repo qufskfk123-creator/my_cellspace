@@ -431,6 +431,117 @@
     #wind-sync-btn:hover  { background: rgba(30, 60, 120, 0.90); color: #c8e0ff; }
     #wind-sync-btn:active { background: rgba(60, 100, 200, 0.80); }
     #wind-sync-btn:disabled { opacity: 0.45; cursor: default; }
+
+    /* ══════════════════════════════════════════
+       📱 모바일 반응형 레이아웃 (max-width: 640px)
+       ══════════════════════════════════════════ */
+    @media (max-width: 640px) {
+
+      /* ── 상단 정보 바: 좌측 정렬, lil-gui 공간 확보 ── */
+      #info-bar {
+        left: 10px;
+        top: 10px;
+        transform: none;
+        flex-wrap: wrap;
+        max-width: calc(100vw - 172px);
+        white-space: normal;
+        gap: 5px;
+      }
+
+      .badge {
+        padding: 5px 11px;
+        font-size: 11px;
+      }
+
+      #weather-badge { font-size: 11px; }
+      #weather-badge .spd { font-size: 13px; }
+
+      #search-box { min-width: 150px; }
+
+      #search-results {
+        min-width: 200px;
+        left: 0;
+        transform: none;
+      }
+
+      /* ── 상태 레이블 ── */
+      #status-label {
+        left: 10px;
+        transform: none;
+        top: auto;
+        bottom: 130px;
+        font-size: 10px;
+        max-width: calc(100vw - 180px);
+      }
+
+      /* ── lil-gui 패널: 너비 축소 ── */
+      .lil-gui.root {
+        --width: 158px !important;
+        right: 8px !important;
+        top: 8px !important;
+      }
+      .lil-gui.root .title {
+        font-size: 10px !important;
+        padding: 5px 8px !important;
+      }
+      .lil-gui.root .children,
+      .lil-gui.root .lil-gui {
+        font-size: 10px !important;
+      }
+      .lil-gui.root .controller {
+        padding: 0 6px !important;
+        min-height: 22px !important;
+      }
+      .lil-gui.root .controller .name { font-size: 9.5px !important; }
+      .lil-gui.root input[type="number"] { font-size: 9.5px !important; }
+
+      /* ── 기상 동기화 버튼: lil-gui 제목바 바로 아래 우측 ── */
+      #wind-sync-btn {
+        top: 50px;
+        right: 8px;
+        font-size: 10px;
+        padding: 4px 10px;
+        border-radius: 18px;
+      }
+
+      /* ── 범례 숨김 (화면 공간 확보) ── */
+      #legend {
+        display: none;
+      }
+
+      /* ── 시간 시뮬레이션 바: 전체 폭으로 확장 ── */
+      #time-sim-bar {
+        width: calc(100vw - 24px);
+        min-width: unset;
+        max-width: unset;
+        bottom: 10px;
+        padding: 8px 14px 10px;
+        border-radius: 12px;
+      }
+
+      #time-sim-label { font-size: 10px; }
+      #time-reset-btn { font-size: 9px; padding: 2px 7px; }
+
+      #time-tick-row span { font-size: 7.5px; }
+      /* 홀수 눈금(03, 09, 15, 21) 숨김 → 00·06·12·18·24만 표시 */
+      #time-tick-row span:nth-child(2),
+      #time-tick-row span:nth-child(4),
+      #time-tick-row span:nth-child(6),
+      #time-tick-row span:nth-child(8) { display: none; }
+
+      /* ── 슬라이더 썸: 터치 친화적 크기 ── */
+      #time-slider::-webkit-slider-thumb {
+        width: 22px;
+        height: 22px;
+      }
+      #time-slider::-moz-range-thumb {
+        width: 22px;
+        height: 22px;
+      }
+
+      /* ── 하단 힌트 숨김 ── */
+      #hint { display: none; }
+    }
   </style>
 </head>
 
