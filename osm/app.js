@@ -63,35 +63,38 @@ map.on('load', () => {
   }, 2000);
   setInterval(() => { if (engine.hasData && map.getTerrain()) engine.buildElevationGrid(map); }, 5000);
 
-  // ── 모바일 회전 패드 ────────────────────────────────────────────────────────
+  // ── 모바일 드래그 카메라 핸들 ──────────────────────────────────────────────
   if (window.matchMedia('(max-width: 640px)').matches) {
-    const BEAR_STEP  = 5;   // 방위각 회전 스텝 (도)
-    const PITCH_STEP = 3;   // 시야각 스텝 (도)
-    const REPEAT_MS  = 60;  // 연속 입력 반복 간격
+    const handle = document.getElementById('cam-drag');
+    if (handle) {
+      const BEAR_SENS  = 0.35;  // px → 방위각(°)
+      const PITCH_SENS = 0.25;  // px → 시야각(°)
+      let dragging = false;
+      let lastX = 0, lastY = 0;
 
-    /** 버튼을 누르는 동안 fn 을 반복 실행 */
-    function _padHold(id, fn) {
-      const el = document.getElementById(id);
-      if (!el) return;
-      let timer = null;
-      const go   = () => { fn(); timer = setTimeout(go, REPEAT_MS); };
-      const stop = () => { clearTimeout(timer); timer = null; };
-      el.addEventListener('pointerdown',   e => { e.preventDefault(); el.setPointerCapture(e.pointerId); go(); });
-      el.addEventListener('pointerup',     stop);
-      el.addEventListener('pointercancel', stop);
-      el.addEventListener('pointerleave',  stop);
+      handle.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        handle.setPointerCapture(e.pointerId);
+        dragging = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        handle.classList.add('active');
+      });
+
+      handle.addEventListener('pointermove', e => {
+        if (!dragging) return;
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        map.setBearing(map.getBearing() + dx * BEAR_SENS);
+        map.setPitch(Math.min(Math.max(map.getPitch() - dy * PITCH_SENS, 0), 85));
+      });
+
+      const stopDrag = () => { dragging = false; handle.classList.remove('active'); };
+      handle.addEventListener('pointerup',     stopDrag);
+      handle.addEventListener('pointercancel', stopDrag);
     }
-
-    _padHold('rpad-bear-left',  () => map.setBearing(map.getBearing() - BEAR_STEP));
-    _padHold('rpad-bear-right', () => map.setBearing(map.getBearing() + BEAR_STEP));
-    _padHold('rpad-pitch-up',   () => map.setPitch(Math.min(map.getPitch() + PITCH_STEP, 85)));
-    _padHold('rpad-pitch-down', () => map.setPitch(Math.max(map.getPitch() - PITCH_STEP, 0)));
-    _padHold('rpad-zoom-in',    () => map.zoomIn({ duration: 150 }));
-    _padHold('rpad-zoom-out',   () => map.zoomOut({ duration: 150 }));
-
-    document.getElementById('rpad-reset')?.addEventListener('click', () => {
-      map.easeTo({ bearing: 0, pitch: 30, duration: 500 });
-    });
   }
 });
 
