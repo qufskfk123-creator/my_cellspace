@@ -308,12 +308,15 @@
       transform: rotate(45deg);
     }
 
-    /* ── lil-gui ── */
+    /* ── lil-gui: 햄버거 버튼 바로 아래에 붙임, 자체 제목바 숨김 ── */
     .lil-gui.root {
       position: fixed !important;
-      top: 10px !important;
+      top: 54px !important;
       right: 10px !important;
       z-index: 600 !important;
+    }
+    .lil-gui.root > .title {
+      display: none !important;
     }
 
     /* ── 시간 시뮬레이션 슬라이더 ── */
@@ -409,11 +412,11 @@
       font-family: 'Segoe UI', monospace, sans-serif;
     }
 
-    /* ── 기상 동기화 버튼 (lil-gui 왼쪽) ── */
+    /* ── 기상 동기화 버튼 (햄버거 왼쪽) ── */
     #wind-sync-btn {
       position: fixed;
       top: 10px;
-      right: 265px;
+      right: 58px;
       z-index: 590;
       background: rgba(4, 8, 20, 0.85);
       border: 1px solid rgba(60, 130, 255, 0.25);
@@ -434,6 +437,46 @@
 
     /* ── 모바일 드래그 카메라 핸들 (기본 숨김) ── */
     #cam-drag { display: none; }
+
+    /* ── 햄버거 메뉴 버튼 ── */
+    #menu-btn {
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      z-index: 610;
+      width: 38px;
+      height: 38px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      background: rgba(4, 8, 20, 0.85);
+      border: 1px solid rgba(60, 130, 255, 0.25);
+      border-radius: 10px;
+      cursor: pointer;
+      padding: 0;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      box-shadow: 0 2px 14px rgba(0,0,0,0.6);
+      transition: background 0.15s, border-color 0.15s;
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #menu-btn:hover { background: rgba(20, 45, 100, 0.92); }
+    #menu-btn.open  {
+      border-color: rgba(60, 130, 255, 0.55);
+      background: rgba(20, 45, 110, 0.92);
+    }
+    #menu-btn span {
+      display: block;
+      width: 18px;
+      height: 2px;
+      background: #7aabcc;
+      border-radius: 1px;
+      transition: background 0.15s;
+    }
+    #menu-btn.open span { background: #5ab4ff; }
 
     /* ══════════════════════════════════════════
        📱 모바일 반응형 레이아웃 (max-width: 640px)
@@ -498,13 +541,16 @@
       .lil-gui.root .controller .name { font-size: 9.5px !important; }
       .lil-gui.root input[type="number"] { font-size: 9.5px !important; }
 
-      /* ── 기상 동기화 버튼: lil-gui 제목바 바로 아래 우측 ── */
-      #wind-sync-btn {
-        top: 50px;
+      /* ── 기상 동기화 버튼: 모바일에서는 패널 내 새로고침으로 대체, 숨김 ── */
+      #wind-sync-btn { display: none; }
+
+      /* ── 햄버거 버튼: 모바일 터치 크기 확보 ── */
+      #menu-btn {
+        width: 44px;
+        height: 44px;
+        top: 8px;
         right: 8px;
-        font-size: 10px;
-        padding: 4px 10px;
-        border-radius: 18px;
+        border-radius: 12px;
       }
 
       /* ── 범례 숨김 (화면 공간 확보) ── */
@@ -554,7 +600,7 @@
         align-items: center;
         justify-content: center;
         position: fixed;
-        bottom: 20px;
+        bottom: 108px;   /* 시간 슬라이더바 위로 */
         left: 16px;
         width: 52px;
         height: 52px;
@@ -592,6 +638,10 @@
 <body>
   <div id="map"></div>
   <button id="wind-sync-btn">🔄 기상 동기화</button>
+  <!-- 설정 패널 토글 버튼 -->
+  <button id="menu-btn" title="설정">
+    <span></span><span></span><span></span>
+  </button>
 
   <!-- 캔버스 레이어: sim-canvas(바람+연기), vent-canvas(발원지 아이콘) -->
   <canvas id="sim-canvas"></canvas>

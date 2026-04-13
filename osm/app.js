@@ -324,8 +324,21 @@ const params = {
 const autoInfo = { windSpeed: '--', autoScale: '--', elevation: '--' };
 
 const gui = new lil.GUI({ title: '🛰 지형 시뮬레이터' });
-// 모바일에서는 GUI 패널 기본 접힘
-if (window.matchMedia('(max-width: 640px)').matches) gui.close();
+gui.close();  // 기본 닫힘 — 햄버거 버튼으로 열기
+
+// 햄버거 버튼 토글
+const _menuBtn = document.getElementById('menu-btn');
+if (_menuBtn) {
+  _menuBtn.addEventListener('click', () => {
+    if (gui._closed) {
+      gui.open();
+      _menuBtn.classList.add('open');
+    } else {
+      gui.close();
+      _menuBtn.classList.remove('open');
+    }
+  });
+}
 
 const infoFolder = gui.addFolder('📡 실시간 정보');
 infoFolder.add(autoInfo, 'windSpeed').name('대표 풍속 m/s').disable();
