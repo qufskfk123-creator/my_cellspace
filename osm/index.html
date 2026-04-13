@@ -432,6 +432,9 @@
     #wind-sync-btn:active { background: rgba(60, 100, 200, 0.80); }
     #wind-sync-btn:disabled { opacity: 0.45; cursor: default; }
 
+    /* ── 모바일 회전 패드 (기본 숨김) ── */
+    #rotate-pad { display: none; }
+
     /* ══════════════════════════════════════════
        📱 모바일 반응형 레이아웃 (max-width: 640px)
        ══════════════════════════════════════════ */
@@ -541,6 +544,90 @@
 
       /* ── 하단 힌트 숨김 ── */
       #hint { display: none; }
+
+      /* ── MapLibre 기본 내비게이션 컨트롤 숨김 ── */
+      .maplibregl-ctrl-top-left { display: none !important; }
+
+      /* ── 회전 패드 레이아웃 ── */
+      #rotate-pad {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 5px;
+        position: fixed;
+        bottom: 18px;
+        left: 14px;
+        z-index: 500;
+      }
+
+      .rpad-cross {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .rpad-row {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+        justify-content: center;
+      }
+
+      /* 공통 버튼 — 44px (터치 최소 크기) */
+      .rpad-btn {
+        width: 44px;
+        height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(4, 8, 20, 0.85);
+        border: 1px solid rgba(60, 130, 255, 0.28);
+        border-radius: 10px;
+        color: #7aabcc;
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        touch-action: manipulation;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-tap-highlight-color: transparent;
+        transition: background 0.1s, color 0.1s, transform 0.08s;
+      }
+
+      .rpad-btn:active {
+        background: rgba(30, 65, 140, 0.92);
+        color: #c8e0ff;
+        transform: scale(0.91);
+      }
+
+      /* 중앙 나침반(N) — 원형 강조 */
+      .rpad-center-btn {
+        background: rgba(4, 8, 20, 0.92);
+        border: 1.5px solid rgba(60, 130, 255, 0.55);
+        border-radius: 50%;
+        color: #5ab4ff;
+        font-size: 13px;
+        font-weight: 700;
+        font-family: 'Segoe UI', monospace, sans-serif;
+        box-shadow: 0 0 8px rgba(60, 130, 255, 0.25), 0 2px 10px rgba(0,0,0,0.5);
+      }
+
+      /* 줌 버튼 — 크로스 총 너비(140px)를 절반씩 */
+      .rpad-zoom {
+        display: flex;
+        gap: 4px;
+      }
+
+      .rpad-zoom-btn {
+        width: 68px;   /* (44×3 + 4×2 − 4) ÷ 2 = 68 */
+        font-size: 22px;
+        font-weight: 300;
+        border-radius: 10px;
+      }
     }
   </style>
 </head>
@@ -616,6 +703,27 @@
   <!-- 하단 힌트 -->
   <div id="hint">
     클릭: 누출원 추가 &nbsp;|&nbsp; 드래그: 지도 이동
+  </div>
+
+  <!-- 모바일 전용 회전 패드 (bottom-left) -->
+  <div id="rotate-pad">
+    <div class="rpad-cross">
+      <div class="rpad-row">
+        <button class="rpad-btn" id="rpad-pitch-up" title="시야각 올리기">▲</button>
+      </div>
+      <div class="rpad-row">
+        <button class="rpad-btn" id="rpad-bear-left" title="좌회전">↺</button>
+        <button class="rpad-btn rpad-center-btn" id="rpad-reset" title="북쪽 정렬">N</button>
+        <button class="rpad-btn" id="rpad-bear-right" title="우회전">↻</button>
+      </div>
+      <div class="rpad-row">
+        <button class="rpad-btn" id="rpad-pitch-down" title="시야각 내리기">▼</button>
+      </div>
+    </div>
+    <div class="rpad-zoom">
+      <button class="rpad-btn rpad-zoom-btn" id="rpad-zoom-out" title="축소">−</button>
+      <button class="rpad-btn rpad-zoom-btn" id="rpad-zoom-in" title="확대">+</button>
+    </div>
   </div>
 
   <script>

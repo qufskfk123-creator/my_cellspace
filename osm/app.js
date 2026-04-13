@@ -62,6 +62,37 @@ map.on('load', () => {
     if (map.getTerrain()) engine.buildElevationGrid(map);
   }, 2000);
   setInterval(() => { if (engine.hasData && map.getTerrain()) engine.buildElevationGrid(map); }, 5000);
+
+  // ── 모바일 회전 패드 ────────────────────────────────────────────────────────
+  if (window.matchMedia('(max-width: 640px)').matches) {
+    const BEAR_STEP  = 5;   // 방위각 회전 스텝 (도)
+    const PITCH_STEP = 3;   // 시야각 스텝 (도)
+    const REPEAT_MS  = 60;  // 연속 입력 반복 간격
+
+    /** 버튼을 누르는 동안 fn 을 반복 실행 */
+    function _padHold(id, fn) {
+      const el = document.getElementById(id);
+      if (!el) return;
+      let timer = null;
+      const go   = () => { fn(); timer = setTimeout(go, REPEAT_MS); };
+      const stop = () => { clearTimeout(timer); timer = null; };
+      el.addEventListener('pointerdown',   e => { e.preventDefault(); el.setPointerCapture(e.pointerId); go(); });
+      el.addEventListener('pointerup',     stop);
+      el.addEventListener('pointercancel', stop);
+      el.addEventListener('pointerleave',  stop);
+    }
+
+    _padHold('rpad-bear-left',  () => map.setBearing(map.getBearing() - BEAR_STEP));
+    _padHold('rpad-bear-right', () => map.setBearing(map.getBearing() + BEAR_STEP));
+    _padHold('rpad-pitch-up',   () => map.setPitch(Math.min(map.getPitch() + PITCH_STEP, 85)));
+    _padHold('rpad-pitch-down', () => map.setPitch(Math.max(map.getPitch() - PITCH_STEP, 0)));
+    _padHold('rpad-zoom-in',    () => map.zoomIn({ duration: 150 }));
+    _padHold('rpad-zoom-out',   () => map.zoomOut({ duration: 150 }));
+
+    document.getElementById('rpad-reset')?.addEventListener('click', () => {
+      map.easeTo({ bearing: 0, pitch: 30, duration: 500 });
+    });
+  }
 });
 
 function _setupSatelliteAndTerrain() {
