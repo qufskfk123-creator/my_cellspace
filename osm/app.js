@@ -13,8 +13,8 @@
 import { WindEngine } from './WindEngine.js';
 
 // ══════════════════════════════════════════════════════════════════════════════
-const PARTICLE_COUNT = 1500;   // 성능 최적화: 기존 3000의 절반
-const SMOKE_COUNT    = 1500;   // 성능 최적화: 기존 3000의 절반
+const PARTICLE_COUNT = 800;    // map.project() 호출 절감 (1500→800)
+const SMOKE_COUNT    = 800;    // 연기 입자 절감
 const GRID_COLS      = 3;      // 멀티포인트 윈드 필드 열 수 (3×3 = 9 API 지점)
 const GRID_ROWS      = 3;
 // ══════════════════════════════════════════════════════════════════════════════
@@ -35,15 +35,17 @@ const map = new maplibregl.Map({
   container: 'map',
   style:     'https://tiles.openfreemap.org/styles/liberty',
   center:    [127.78, 36.0],
-  zoom:       7,
-  pitch:      30,
+  zoom:       7,       // 기본: 지도 뷰 (한국 전역)
+  pitch:      0,
   bearing:    0,
   antialias:  true,
   maxPitch:   85,
+  // projection 미지정 → 기본 mercator (지구본은 버튼 토글로만 활성화)
 });
 map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'top-left');
 
 map.on('load', () => {
+
   _setupSatelliteAndTerrain();
   fetchWindField();           // 최초 1회 호출
   fetchLocationName();
@@ -60,6 +62,7 @@ map.on('load', () => {
   setTimeout(() => {
     _applyMapEnvironment();   // 로드 직후 시간대 환경 초기 적용
     if (map.getTerrain()) engine.buildElevationGrid(map);
+    _initSunLayer();          // Deck.gl 태양 구체 레이어 초기화
   }, 2000);
   setInterval(() => { if (engine.hasData && map.getTerrain()) engine.buildElevationGrid(map); }, 5000);
 
@@ -151,7 +154,7 @@ function _setupSatelliteAndTerrain() {
     tileSize: 256,
     maxzoom:  14,
   });
-  map.setTerrain({ source: 'terrain-dem', exaggeration: 1.5 });
+  try { map.setTerrain({ source: 'terrain-dem', exaggeration: 1.5 }); } catch(e) {}
 
   console.log('[TerrainSim] 위성 + 지형 설정 완료');
 }
@@ -194,7 +197,7 @@ function resizeCanvas() {
   canvas.height = trailCanvas.height = smokeCanvas.height = ventCanvas.height = h;
 }
 resizeCanvas();
-window.addEventListener('resize', () => { resizeCanvas(); map.resize(); if (engine.hasData) _rebuildAndClear(); });
+window.addEventListener('resize', () => { resizeCanvas(); map.resize(); if (engine.hasData) _rebuildAndClear(); _resizeSunFlare(); });
 
 // ── WindEngine ────────────────────────────────────────────────────────────────
 const engine = new WindEngine({
@@ -215,7 +218,6 @@ function _rebuildAndClear() {
   engine.setBounds(b.getWest()-dLng, b.getSouth()-dLat, b.getEast()+dLng, b.getNorth()+dLat);
   engine.buildLookup(map, dpr, _autoSpeedScale * params.speedMult, params.noiseAmt);
   trailCtx.clearRect(0, 0, trailCanvas.width, trailCanvas.height);
-  // 지형 갱신 (약간의 지연으로 새 타일 로드 대기)
   if (map.getTerrain()) setTimeout(() => engine.buildElevationGrid(map), 800);
 }
 
@@ -223,15 +225,20 @@ function _rebuildAndClear() {
 map.on('movestart',  () => {
   trailCtx.clearRect(0, 0, trailCanvas.width, trailCanvas.height);
 });
-map.on('moveend',    () => { _rebuildAndClear(); fetchLocationName(); });
-map.on('pitchend',   () => { _rebuildAndClear(); });
-map.on('rotateend',  () => { _rebuildAndClear(); });
+map.on('moveend',    () => { _rebuildAndClear(); fetchLocationName(); _updateSunDeckLayer(); });
+map.on('pitchend',   () => { _rebuildAndClear(); _updateSunDeckLayer(); });
+map.on('rotateend',  () => { _rebuildAndClear(); _updateSunDeckLayer(); });
+// pitch 드래그 중 실시간 업데이트 (rAF 쓰로틀: 최대 1회/프레임)
+map.on('pitch', () => {
+  if (_deckPitchPending) return;
+  _deckPitchPending = true;
+  requestAnimationFrame(() => { _deckPitchPending = false; _updateSunDeckLayer(); });
+});
 
 // ── 줌 → 80m 고도 자동 전환 + 줌 비율에 따른 API 재호출 ────────────────────
 map.on('zoomend', () => {
   const z = map.getZoom();
 
-  // 고도 레이어 자동 전환 — 전환 시 최신 뷰포트로 바람 재호출
   if (z > 12 && params.useHeight) {
     params.useHeight = false;
     useHeightCtrl.updateDisplay();
@@ -248,7 +255,6 @@ map.on('zoomend', () => {
     _rebuildAndClear();
   }
 
-  // 줌 변화량이 임계치(2레벨) 이상이면 API 재호출 (30초 쿨다운)
   if (Math.abs(z - _lastFetchZoom) >= ZOOM_FETCH_THRESHOLD &&
       Date.now() - _lastFetchTime > ZOOM_FETCH_COOLDOWN) {
     console.log(`[Wind] 줌 변화 ${_lastFetchZoom.toFixed(1)}→${z.toFixed(1)} — 바람 재호출`);
@@ -846,40 +852,193 @@ function _keyToOut(lo, hi, t) {
   };
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Astronomy Engine 기반 물리 조명 시스템
+//   · J2000 지구 중심 벡터 → 황도(ecliptic) 계절 반영, 연주시차·광행차 포함
+//   · altitude : 라디안 (음수 = 지평선 아래 = 밤)
+//   · azimuth  : 라디안, SunCalc 호환 (남=0, 서=+π/2, 북=±π, 동=-π/2)
+//   · subLat/subLng : 태양 직하점 (Terminator / MapLibre 조명 연동)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 그리니치 겉보기 항성시(GAST) — 도(°) 단위
+ * J2000 적도 좌표 → ECEF 변환 시 지구 자전 보정에 사용
+ */
+/**
+ * VSOP87 간이 수학 기반 태양 위치 계산 (오차 < 0.5°)
+ * 플레어·조명 용도로 충분한 정밀도
+ */
+function _getSunPosFallback(fracHour) {
+  const c   = map.getCenter();
+  const now = new Date();
+  const d   = new Date(
+    now.getFullYear(), now.getMonth(), now.getDate(),
+    Math.floor(fracHour), Math.round((fracHour % 1) * 60), 0,
+  );
+  const J   = d.getTime() / 86400000 + 2440587.5;
+  const n   = J - 2451545.0;                   // J2000.0 기준 일수
+
+  // 평균 황경·근점각
+  const L = (280.460  + 0.9856474 * n) * Math.PI / 180;
+  const g = (357.528  + 0.9856003 * n) * Math.PI / 180;
+  // 황도 경도 (1차 보정 포함)
+  const λ = L + (1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * Math.PI / 180;
+  // 황도 경사각
+  const ε = (23.439 - 0.0000004 * n) * Math.PI / 180;
+
+  // 적위·적경
+  const sinδ = Math.sin(ε) * Math.sin(λ);
+  const δ    = Math.asin(Math.max(-1, Math.min(1, sinδ)));        // 적위(rad)
+  const ra   = Math.atan2(Math.cos(ε) * Math.sin(λ), Math.cos(λ)); // 적경(rad)
+
+  // GMST (GAST 근사)
+  const T       = n / 36525.0;
+  const gmstDeg = 280.46061837 + 360.98564736629 * n + 0.000387933 * T * T;
+  const gmst    = ((gmstDeg % 360) + 360) % 360 * Math.PI / 180;
+
+  // 시간각
+  const H = gmst - ra + c.lng * Math.PI / 180;
+
+  // 고도
+  const latR   = c.lat * Math.PI / 180;
+  const sinAlt = Math.sin(latR)*Math.sin(δ) + Math.cos(latR)*Math.cos(δ)*Math.cos(H);
+  const alt    = Math.asin(Math.max(-1, Math.min(1, sinAlt)));
+
+  // 방위각 (N 기준 시계방향 → SunCalc S=0 변환)
+  const cosAlt = Math.cos(alt);
+  const cosAzN = cosAlt > 1e-10
+    ? (Math.sin(δ) - Math.sin(latR) * Math.sin(alt)) / (cosAlt * Math.cos(latR))
+    : 0;
+  let azN = Math.acos(Math.max(-1, Math.min(1, cosAzN)));
+  if (Math.sin(H) > 0) azN = 2 * Math.PI - azN;
+  const azSC = azN - Math.PI;  // N 기준 → S 기준 변환
+
+  // 직하점 경도
+  let subLng = (ra - gmst) * 180 / Math.PI;
+  subLng     = ((subLng + 180) % 360) - 180;
+
+  return { altitude: alt, azimuth: azSC, subLat: δ * 180 / Math.PI, subLng };
+}
+
+/** alias */
+const _getSunPos = _getSunPosFallback;
+
+/**
+ * SunCalc 위치 → MapLibre light.position 배열 변환
+ * MapLibre position: [radial, azimuthal_deg, polar_deg]
+ *   azimuthal_deg: 북=0, 동=90, 남=180, 서=270 (시계방향)
+ *   polar_deg:     zenith=0, 수평=90
+ * SunCalc azimuth: 남=0, 서=π/2, 북=π (시계방향 라디안)
+ */
+function _sunToMapLightPos(sunPos) {
+  const azDeg  = ((sunPos.azimuth * (180 / Math.PI)) + 180) % 360;
+  const altDeg = sunPos.altitude  * (180 / Math.PI);
+  const polDeg = Math.max(1, Math.min(90, 90 - altDeg));
+  return [1.5, azDeg, polDeg];
+}
+
+/**
+ * 태양 고도(라디안) → body 배경 하늘색 CSS 문자열 보간
+ * 정오(≥20°): 하늘색  →  일출/일몰(≈0°): 주황색  →  밤(<-6°): 남색
+ */
+function _altToSkyBg(altRad) {
+  const altDeg = altRad * (180 / Math.PI);
+  const CN = [6,   10,  20];   // 남색(밤)    #060a14
+  const CS = [255, 106, 40];   // 주황색(일몰)
+  const CD = [70,  140, 210];  // 하늘색(정오)
+
+  let r, g, b;
+  if (altDeg <= -6) {
+    [r, g, b] = CN;
+  } else if (altDeg < 0) {
+    const t = (altDeg + 6) / 6;   // -6°→0, 0°→1
+    r = Math.round(CN[0] * (1 - t) + CS[0] * t);
+    g = Math.round(CN[1] * (1 - t) + CS[1] * t);
+    b = Math.round(CN[2] * (1 - t) + CS[2] * t);
+  } else if (altDeg < 20) {
+    const t = altDeg / 20;         // 0°→0, 20°→1
+    r = Math.round(CS[0] * (1 - t) + CD[0] * t);
+    g = Math.round(CS[1] * (1 - t) + CD[1] * t);
+    b = Math.round(CS[2] * (1 - t) + CD[2] * t);
+  } else {
+    [r, g, b] = CD;
+  }
+  return `rgb(${r},${g},${b})`;
+}
+
+// 마지막으로 계산된 태양 위치 (화재 조명 업데이트에서 재사용)
+let _lastSunPos = null;
+
 function _applyMapEnvironment(overrideH) {
   const h  = overrideH !== undefined ? Number(overrideH) : _effectiveHour();
   const lk = _lerpLightKey(h);
   // 환경 갱신 시 fire 조명 캐시 무효화 → 다음 프레임에 _updateFireLight 재실행
   if (typeof _prevFireVentCnt !== 'undefined') _prevFireVentCnt = -1;
 
-  // 1. 조명 — 태양 고도·방위·색상·강도
+  // ── SunCalc 태양 위치 계산 ───────────────────────────────────────────────
+  const sunPos = _getSunPos(h);
+  _lastSunPos  = sunPos;
+  const isNight = sunPos ? sunPos.altitude < 0 : false;
+
+  // 1. DirectionalLight — SunCalc 실제 방향 적용
   try {
-    map.setLight({
-      anchor:    'map',
-      color:     lk.col,
-      intensity: lk.it,
-      position:  [1.5, lk.az, lk.po],
-    });
+    if (sunPos) {
+      const pos = _sunToMapLightPos(sunPos);
+      if (isNight) {
+        // 밤: 태양광 끄고, AmbientLight 0.05 수준으로 최소화
+        map.setLight({
+          anchor:    'map',
+          color:     '#060610',
+          intensity: 0.05,
+          position:  pos,
+        });
+      } else {
+        // 낮: SunCalc 실제 방향 + 키프레임 색상·강도
+        map.setLight({
+          anchor:    'map',
+          color:     lk.col,
+          intensity: lk.it,
+          position:  pos,
+        });
+      }
+    } else {
+      // SunCalc 미로드 시 기존 키프레임 폴백
+      map.setLight({
+        anchor:    'map',
+        color:     lk.col,
+        intensity: lk.it,
+        position:  [1.5, lk.az, lk.po],
+      });
+    }
   } catch(e) { console.warn('[Env] setLight 실패:', e.message); }
 
-  // 2. 대기 안개 — 거리감·공기감·별
+  // 2. 대기 안개
   try {
     if (typeof map.setFog === 'function') {
       map.setFog({
-        color:            lk.fog,
-        'high-color':     lk.fogH,
-        'horizon-blend':  lk.hb,
-        range:            lk.rn,
-        'star-intensity': lk.st,
-        'space-color':    lk.sp,
+        color:           lk.fog,
+        'high-color':    lk.fogH,
+        'horizon-blend': lk.hb,
+        range:           lk.rn,
+        'star-intensity':lk.st,
+        'space-color':   lk.sp,
       });
     }
-  } catch(e) { console.warn('[Env] setFog 실패:', e.message); }
+  } catch(e) {}
 
   // 3. 건물 셰이딩 — 시간대별 색상 + 수직 그라디언트
   _applyBuildingColor(h);
 
-  console.log(`[Env] 🌤 ${h.toFixed(2)}h | az${lk.az.toFixed(0)}° po${lk.po.toFixed(0)}° | it${lk.it.toFixed(2)}`);
+  // 4. 배경 하늘색
+  if (sunPos) document.body.style.background = _altToSkyBg(sunPos.altitude);
+
+  // 5. Deck.gl 태양 구체 위치 업데이트
+  _updateSunDeckLayer(h);
+
+  const sunInfo = sunPos
+    ? ` | sun alt${(sunPos.altitude * 180 / Math.PI).toFixed(1)}° az${(sunPos.azimuth * 180 / Math.PI + 180).toFixed(0)}°`
+    : '';
+  console.log(`[Env] 🌤 ${h.toFixed(2)}h | it${lk.it.toFixed(2)}${sunInfo}`);
 }
 
 /** 시간대별 건물 색상 + fill-extrusion-vertical-gradient 제어 */
@@ -1446,11 +1605,13 @@ function _updateFireLight() {
   if (cnt === _prevFireVentCnt) return;
   _prevFireVentCnt = cnt;
 
-  const h  = _simHour !== null ? _simHour : _effectiveHour();
-  const lk = _lerpLightKey(h);
+  const h   = _simHour !== null ? _simHour : _effectiveHour();
+  const lk  = _lerpLightKey(h);
+  // SunCalc 위치 우선, 없으면 키프레임 폴백
+  const pos = _lastSunPos ? _sunToMapLightPos(_lastSunPos) : [1.5, lk.az, lk.po];
 
   if (cnt === 0) {
-    try { map.setLight({ anchor:'map', color:lk.col, intensity:lk.it, position:[1.5,lk.az,lk.po] }); } catch(e) {}
+    try { map.setLight({ anchor:'map', color:lk.col, intensity:lk.it, position:pos }); } catch(e) {}
     return;
   }
 
@@ -1464,9 +1625,405 @@ function _updateFireLight() {
   const blI  = Math.min(1.0, lk.it + str * 0.28);
 
   try {
-    map.setLight({ anchor:'map', color:`rgb(${blR},${blG},${blB})`, intensity:blI, position:[1.5,lk.az,lk.po] });
+    map.setLight({ anchor:'map', color:`rgb(${blR},${blG},${blB})`, intensity:blI, position:pos });
   } catch(e) {}
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Deck.gl 태양 구체 레이어 (SimpleMeshLayer + 렌즈 플레어)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * 단위 아이코스피어(Icosphere) 메시 생성
+ * detail=2 → ~320 삼각형, SimpleMeshLayer 호환 plain mesh 객체 반환
+ */
+function _createIcosphereMesh(detail = 2) {
+  const PHI = (1 + Math.sqrt(5)) / 2;
+  let verts = [
+    [-1, PHI, 0], [1, PHI, 0], [-1, -PHI, 0], [1, -PHI, 0],
+    [0, -1, PHI], [0, 1, PHI], [0, -1, -PHI], [0, 1, -PHI],
+    [PHI, 0, -1], [PHI, 0, 1], [-PHI, 0, -1], [-PHI, 0, 1],
+  ].map(v => { const l = Math.hypot(...v); return v.map(x => x / l); });
+
+  let faces = [
+    [0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],
+    [1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],
+    [3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],
+    [4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1],
+  ];
+
+  for (let d = 0; d < detail; d++) {
+    const midCache = new Map();
+    const getMid = (a, b) => {
+      const key = Math.min(a, b) + '_' + Math.max(a, b);
+      if (midCache.has(key)) return midCache.get(key);
+      const va = verts[a], vb = verts[b];
+      const m = [0, 1, 2].map(i => (va[i] + vb[i]) / 2);
+      const l = Math.hypot(...m);
+      verts.push(m.map(x => x / l));
+      midCache.set(key, verts.length - 1);
+      return verts.length - 1;
+    };
+    faces = faces.flatMap(([a, b, c]) => {
+      const ab = getMid(a, b), bc = getMid(b, c), ca = getMid(c, a);
+      return [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]];
+    });
+  }
+
+  // deck.gl SimpleMeshLayer 호환 plain mesh 포맷
+  return {
+    attributes: {
+      POSITION: { value: new Float32Array(verts.flat()), size: 3 },
+      NORMAL:   { value: new Float32Array(verts.flat()), size: 3 },  // 단위구: position=normal
+    },
+    indices: { value: new Uint32Array(faces.flat()), size: 1 },
+  };
+}
+
+/**
+ * SunCalc 위치 → 지도 중심으로부터 distM 거리의 3D 지리좌표
+ * 태양이 화면에 항상 올바른 방향에 있도록 카메라 중심 기준으로 계산
+ * @returns {{ lng: number, lat: number, alt: number }}  (alt = 해발 고도 m)
+ */
+function _sunPosToWorld(sunPos, center, distM = 100000) {
+  const altRad     = sunPos.altitude;
+  // SunCalc azimuth: 남=0, 서=π/2 → 북 기준 bearing으로 변환 (+π)
+  const bearingRad = sunPos.azimuth + Math.PI;
+
+  const horizDist = distM * Math.cos(altRad);
+  const vertDist  = distM * Math.sin(altRad);  // 고도(m)
+
+  const eastM  = horizDist * Math.sin(bearingRad);
+  const northM = horizDist * Math.cos(bearingRad);
+
+  const cosLat = Math.cos(center.lat * Math.PI / 180);
+  return {
+    lng: center.lng + eastM  / (111320 * cosLat),
+    lat: center.lat + northM / 110540,
+    alt: vertDist,
+  };
+}
+
+// ── 지구 중심 벡터 기반 태양 위치 변환 ───────────────────────────────────────
+
+/**
+ * 태양 직하점(subLat/subLng) → ECEF 단위 벡터 → 카메라 ENU 오프셋 → 지리 좌표
+ *
+ * 핵심: 직하점은 지구 어느 위치에서도 동일한 "방향"이므로
+ *       카메라가 어디로 이동해도 태양 방향이 일관되게 유지됨 (무한 거리 팔로잉).
+ *
+ * @param {object} sunData   _getAstroSun() 반환값 (subLat, subLng 필수)
+ * @param {object} center    map.getCenter() — { lat, lng }
+ * @param {number} distM     배치 거리(m), 기본 500 km
+ * @returns {{ lng, lat, alt, enu }}
+ */
+function _sunGeocentricToWorld(sunData, center, distM = 500_000) {
+  // 태양 직하점 → ECEF 단위 벡터
+  const φs = sunData.subLat * Math.PI / 180;
+  const λs = sunData.subLng * Math.PI / 180;
+  const ex =  Math.cos(φs) * Math.cos(λs);
+  const ey =  Math.cos(φs) * Math.sin(λs);
+  const ez =  Math.sin(φs);
+
+  // ECEF → 카메라 중심 기준 ENU 좌표 변환
+  const φ = center.lat * Math.PI / 180;
+  const λ = center.lng * Math.PI / 180;
+  const east  = -ex * Math.sin(λ)              + ey * Math.cos(λ);
+  const north = -ex * Math.sin(φ)*Math.cos(λ)  - ey * Math.sin(φ)*Math.sin(λ) + ez * Math.cos(φ);
+  const up    =  ex * Math.cos(φ)*Math.cos(λ)  + ey * Math.cos(φ)*Math.sin(λ) + ez * Math.sin(φ);
+
+  const cosLat = Math.cos(φ);
+  return {
+    lng: center.lng + (east  * distM) / (111320 * cosLat),
+    lat: center.lat + (north * distM) / 110540,
+    alt: up * distM,
+    enu: { east, north, up },  // 정규화된 ENU 방향 벡터 (dotFwd 계산 재사용)
+  };
+}
+
+/**
+ * 태양 직하점 → MapLibre Terminator(명암 경계선) GeoJSON 업데이트
+ *
+ * 공식: tan(lat) = -cos(H) / tan(δ)   (H = 관측 경도 − 직하점 경도)
+ * 야간 반구 폴리곤(CCW) = Terminator + 야간 극 방향 폐합
+ *
+ * @param {number} subLat  태양 적위(°) — 계절 반영: 여름 +23.45°, 겨울 −23.45°
+ * @param {number} subLng  태양 직하점 경도(°)
+ */
+// ── Deck.gl 태양 레이어 상태 ──────────────────────────────────────────────────
+let _deckOverlay    = null;
+let _sphereMesh     = null;
+let _sunFlareCanvas = null;
+let _sunFlareCtx    = null;
+let _sunInView       = false;   // 태양이 현재 화면 안에 있는가
+let _exposureSmooth  = 1.0;    // CSS brightness 스무딩 값
+let _deckPitchPending = false; // pitch 이벤트 rAF 쓰로틀
+let _sunPosFrame     = 0;     // 태양 위치 갱신 프레임 카운터
+
+/** map.on('load') 후 호출 — 렌즈 플레어 캔버스 초기화 */
+function _initSunLayer() {
+  _sunFlareCanvas = document.createElement('canvas');
+  _sunFlareCanvas.style.cssText =
+    'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:396;';
+  document.body.appendChild(_sunFlareCanvas);
+  _sunFlareCtx = _sunFlareCanvas.getContext('2d');
+  _resizeSunFlare();
+}
+
+/** 창 크기 변경 시 플레어 캔버스 리사이즈 */
+function _resizeSunFlare() {
+  if (!_sunFlareCanvas) return;
+  _sunFlareCanvas.width  = Math.round(window.innerWidth  * dpr);
+  _sunFlareCanvas.height = Math.round(window.innerHeight * dpr);
+}
+
+/**
+ * 태양 고도에 따른 색상 · 반경 계산 (ScatterplotLayer 용)
+ *   altitude > 15°  : 노랑  radius 5000m
+ *   altitude 0~15°  : 주황~붉음으로 보간  radius 5000→8500m (일몰 확대)
+ */
+function _computeSunStyle(sunPos) {
+  const altDeg = sunPos.altitude * (180 / Math.PI);
+  const t      = Math.max(0, Math.min(1, altDeg / 15));  // 0(지평선) → 1(15°+)
+
+  // 색상: 높은 고도=노랑 [255,248,100], 낮은 고도=붉은 주황 [255,80,20]
+  const r = 255;
+  const g = Math.round(248 * t + 80 * (1 - t));
+  const b = Math.round(100 * t + 20 * (1 - t));
+
+  // 반경(미터): 일몰 때 더 크게 (대기 굴절 표현) — ScatterplotLayer radiusUnits:'meters'
+  const radius = Math.round(5000 + 3500 * (1 - t));
+
+  return { r, g, b, radius };
+}
+
+/** 태양 위치 실시간 갱신 (60프레임≈1초마다 재계산, 나머지는 캐시) */
+function _updateSunDeckLayer(fracHour) {
+  if (fracHour !== undefined) {
+    _lastSunPos = _getSunPosFallback(fracHour);
+    return;
+  }
+  _sunPosFrame++;
+  if (!_lastSunPos || _sunPosFrame % 60 === 0) {
+    const now = new Date();
+    const h   = _simHour !== null
+      ? _simHour
+      : now.getHours() + now.getMinutes() / 60 + now.getSeconds() / 3600;
+    _lastSunPos = _getSunPosFallback(h);
+  }
+}
+
+// ── 렌즈 플레어 ──────────────────────────────────────────────────────────────
+
+/**
+ * 정밀 3D 카메라 투영: 태양 방향 벡터 → 화면 픽셀 좌표
+ *
+ * 좌표계: ENU (East-North-Up)
+ * 카메라 기저(basis) 벡터:
+ *   fwd   = 카메라가 바라보는 방향 (bearing + pitch 기반)
+ *   right = fwd × worldUp, 정규화
+ *   up    = right × fwd, 정규화
+ *
+ * 투영:
+ *   ndcX = dot(sunDir, right) / (dot(sunDir, fwd) * tan(hFovH))
+ *   ndcY = dot(sunDir, up)    / (dot(sunDir, fwd) * tan(hFovV))
+ *
+ * @returns {{ sx, sy, inView, dotFwd } | null}  (null = 카메라 뒤 또는 너무 먼 밖)
+ */
+function _projectSunToScreen(sunPos) {
+  if (!sunPos || !_sunFlareCanvas) return null;
+
+  const CW = _sunFlareCanvas.width;
+  const CH = _sunFlareCanvas.height;
+
+  // 카메라 상태 (라디안)
+  const b  = map.getBearing() * Math.PI / 180;  // 방위각
+  const p  = map.getPitch()   * Math.PI / 180;  // 부앙각 (0=부감, π/2=수평)
+
+  // ── 카메라 기저 벡터 (ENU) ────────────────────────────────────────────────
+  // Forward (바라보는 방향): pitch=0 → [0,0,-1], pitch=90° → [sin(b),cos(b),0]
+  const fwd   = [
+    Math.sin(p) * Math.sin(b),
+    Math.sin(p) * Math.cos(b),
+    -Math.cos(p),
+  ];
+  // Right: bearing 시계방향 90° = [cos(b), -sin(b), 0]
+  const right = [Math.cos(b), -Math.sin(b), 0];
+  // Up: right × fwd
+  const up    = [
+    right[1]*fwd[2] - right[2]*fwd[1],   // = sin(b)*cos(p)
+    right[2]*fwd[0] - right[0]*fwd[2],   // = cos(b)*cos(p)
+    right[0]*fwd[1] - right[1]*fwd[0],   // = sin(p)
+  ];
+
+  // ── 태양 방향 벡터 (ENU) ─────────────────────────────────────────────────
+  // SunCalc azimuth: 남=0, 서=π/2  →  북 기준(+π) bearing으로 변환
+  const sb  = sunPos.azimuth + Math.PI;
+  const sa  = sunPos.altitude;
+  const sun = [
+    Math.cos(sa) * Math.sin(sb),
+    Math.cos(sa) * Math.cos(sb),
+    Math.sin(sa),
+  ];
+
+  // ── 카메라 공간 투영 ─────────────────────────────────────────────────────
+  const dotFwd   = sun[0]*fwd[0]   + sun[1]*fwd[1]   + sun[2]*fwd[2];
+  const dotRight = sun[0]*right[0] + sun[1]*right[1] + sun[2]*right[2];
+  const dotUp    = sun[0]*up[0]    + sun[1]*up[1]    + sun[2]*up[2];
+
+  if (dotFwd <= 0.01) return null;   // 카메라 뒤
+
+  // MapLibre 수평 FOV ≈ 53°
+  const tanHFovH = Math.tan(26.5 * Math.PI / 180);  // ≈ 0.4986
+  const aspect   = CW / CH;
+  const tanHFovV = tanHFovH / aspect;
+
+  // NDC [-1, 1] (y_ndc=+1 = 화면 상단)
+  const ndcX =  dotRight / (dotFwd * tanHFovH);
+  const ndcY =  dotUp    / (dotFwd * tanHFovV);
+
+  // 화면 픽셀 (y_screen=0 = 화면 상단)
+  const sx = CW / 2 + ndcX * CW / 2;
+  const sy = CH / 2 - ndcY * CH / 2;
+
+  // 화면 내부 여부 (약간 여유 포함)
+  const margin = 1.25;
+  const inView = Math.abs(ndcX) <= 1.0 && Math.abs(ndcY) <= 1.0;
+  if (Math.abs(ndcX) > margin || Math.abs(ndcY) > margin) return null;
+
+  return { sx, sy, inView, dotFwd };
+}
+
+// _estimateSunScreen은 _projectSunToScreen으로 대체됨 (하위 호환 alias)
+const _estimateSunScreen = _projectSunToScreen;
+
+/**
+ * 매 프레임: 렌즈 플레어 + 코로나 글로우 Canvas 2D 렌더
+ *
+ * 특징:
+ *   · _projectSunToScreen() 으로 정밀 3D 투영 사용
+ *   · pitch 기반 baseAlpha: pitch<30° → 완전 투명
+ *   · 고도 기반 색상: 높은 고도=노랑, 일몰=주황~붉음
+ *   · inView 상태에 따라 _sunInView 플래그 갱신 (노출 보정 트리거)
+ *
+ * 레이어:
+ *   1. 외부 코로나 헤일로
+ *   2. 중간 글로우 링 (고도 색상 반영)
+ *   3. 내부 선명 핵심
+ *   4. 렌즈 플레어 스트릭 (화면 중심 방향 고리들)
+ */
+function _drawSunFlareFrame() {
+  if (!_sunFlareCtx || !_sunFlareCanvas) return;
+
+  const W = _sunFlareCanvas.width, H = _sunFlareCanvas.height;
+  _sunFlareCtx.clearRect(0, 0, W, H);
+
+  if (!_lastSunPos || _lastSunPos.altitude < 0) { _sunInView = false; return; }
+
+  const sp = _projectSunToScreen(_lastSunPos);
+  if (!sp) { _sunInView = false; return; }
+
+  _sunInView = sp.inView;
+  const { sx, sy } = sp;
+  const altDeg = _lastSunPos.altitude * (180 / Math.PI);
+  // 고도 기반 페이드: 0°(지평선) → 8°(완전 불투명) — 지구본/지도 모두 동일 적용
+  const baseAlpha = Math.min(1, altDeg / 8);
+  if (baseAlpha < 0.015) return;
+
+  // ── 고도 기반 글로우 색상 ─────────────────────────────────────────────────
+  const altT  = Math.max(0, Math.min(1, altDeg / 15));  // 0=일몰, 1=높은 고도
+  const glR   = 255;
+  const glG   = Math.round(252 * altT + 80  * (1 - altT));  // 252→80
+  const glB   = Math.round(200 * altT + 20  * (1 - altT));  // 200→20
+  const glStr = `${glR},${glG},${glB}`;
+
+  // ── 1. 외부 코로나 헤일로 ─────────────────────────────────────────────────
+  const r1 = Math.min(W, H) * 0.22;
+  const g1 = _sunFlareCtx.createRadialGradient(sx, sy, r1 * 0.04, sx, sy, r1);
+  g1.addColorStop(0,    `rgba(${glStr},${(baseAlpha * 0.14).toFixed(3)})`);
+  g1.addColorStop(0.3,  `rgba(${glStr},${(baseAlpha * 0.06).toFixed(3)})`);
+  g1.addColorStop(1,    'rgba(0,0,0,0)');
+  _sunFlareCtx.fillStyle = g1;
+  _sunFlareCtx.beginPath();
+  _sunFlareCtx.arc(sx, sy, r1, 0, Math.PI * 2);
+  _sunFlareCtx.fill();
+
+  // ── 2. 중간 글로우 링 ─────────────────────────────────────────────────────
+  // 일몰 시 크기 확대 (sizeScale과 연동)
+  const glowScale = 1 + 0.6 * (1 - altT);  // 높은 고도=1.0, 일몰=1.6
+  const r2 = Math.min(W, H) * 0.072 * glowScale;
+  const g2 = _sunFlareCtx.createRadialGradient(sx, sy, 0, sx, sy, r2);
+  g2.addColorStop(0,    `rgba(${glStr},${(baseAlpha * 0.55).toFixed(3)})`);
+  g2.addColorStop(0.4,  `rgba(${glStr},${(baseAlpha * 0.22).toFixed(3)})`);
+  g2.addColorStop(1,    'rgba(0,0,0,0)');
+  _sunFlareCtx.fillStyle = g2;
+  _sunFlareCtx.beginPath();
+  _sunFlareCtx.arc(sx, sy, r2, 0, Math.PI * 2);
+  _sunFlareCtx.fill();
+
+  // ── 3. 내부 선명 핵심 ────────────────────────────────────────────────────
+  const r3 = Math.min(W, H) * 0.015 * glowScale;
+  const g3 = _sunFlareCtx.createRadialGradient(sx, sy, 0, sx, sy, r3);
+  g3.addColorStop(0,    `rgba(255,255,255,${(baseAlpha * 0.96).toFixed(3)})`);
+  g3.addColorStop(0.3,  `rgba(${glStr},${(baseAlpha * 0.78).toFixed(3)})`);
+  g3.addColorStop(1,    'rgba(0,0,0,0)');
+  _sunFlareCtx.fillStyle = g3;
+  _sunFlareCtx.beginPath();
+  _sunFlareCtx.arc(sx, sy, r3, 0, Math.PI * 2);
+  _sunFlareCtx.fill();
+
+  // ── 4. 렌즈 플레어 스트릭 (화면 중심 방향으로 고리 계열) ─────────────────
+  const cx = W / 2, cy = H / 2;
+  const dx = cx - sx, dy = cy - sy;
+  const flares = [
+    { t: 0.25, rr: 0.010, a: 0.30, c: glStr             },
+    { t: 0.48, rr: 0.007, a: 0.20, c: '200,220,255'     },
+    { t: 0.70, rr: 0.012, a: 0.18, c: glStr             },
+    { t: 1.08, rr: 0.006, a: 0.14, c: '180,210,255'     },
+    { t: 1.45, rr: 0.005, a: 0.10, c: '255,235,140'     },
+  ];
+  for (const f of flares) {
+    const fx = sx + dx * f.t;
+    const fy = sy + dy * f.t;
+    const fr = Math.min(W, H) * f.rr;
+    if (fr <= 0) continue;
+    const gf = _sunFlareCtx.createRadialGradient(fx, fy, 0, fx, fy, fr);
+    gf.addColorStop(0,   `rgba(${f.c},${(baseAlpha * f.a).toFixed(3)})`);
+    gf.addColorStop(0.5, `rgba(${f.c},${(baseAlpha * f.a * 0.4).toFixed(3)})`);
+    gf.addColorStop(1,   'rgba(0,0,0,0)');
+    _sunFlareCtx.fillStyle = gf;
+    _sunFlareCtx.beginPath();
+    _sunFlareCtx.arc(fx, fy, fr, 0, Math.PI * 2);
+    _sunFlareCtx.fill();
+  }
+}
+
+/**
+ * 노출 보정 (카메라 노출 흉내)
+ * 태양이 화면 안에 있을 때: 지도 brightness 1.0 → 1.12 (따뜻한 톤)
+ * 화면 밖이거나 밤:         brightness → 1.0 (차분하게 복귀)
+ *
+ * CSS filter는 MapLibre WebGL canvas에만 적용 — 파티클 오버레이는 영향 없음
+ */
+function _tickExposure() {
+  // 목표값 결정
+  const target = (_sunInView && _lastSunPos && _lastSunPos.altitude > 0) ? 1.11 : 1.0;
+
+  // 지수 평활 (τ ≈ 33프레임 ≈ 0.55초 @60fps)
+  _exposureSmooth += (target - _exposureSmooth) * 0.03;
+
+  if (Math.abs(_exposureSmooth - 1.0) < 0.003) {
+    _exposureSmooth = 1.0;
+    document.getElementById('map').style.filter = '';
+    return;
+  }
+
+  const bv = _exposureSmooth.toFixed(3);
+  // 태양 노출 시 살짝 따뜻한 채도도 올림
+  const sv = (1 + (_exposureSmooth - 1) * 0.5).toFixed(3);
+  document.getElementById('map').style.filter = `brightness(${bv}) saturate(${sv})`;
+}
+
 
 // ── Canvas 기반 연기/화재/가스 렌더러 ────────────────────────────────────────
 
@@ -1606,28 +2163,37 @@ let frameCount = 0;
 function startLoop() { loop(); }
 function loop() {
   requestAnimationFrame(loop);
-  engine.step();
+  // 물리 시뮬레이션: 짝수 프레임만 (30fps 물리 — 시각적 차이 없음)
+  if (frameCount % 2 === 0) engine.step();
   _checkBuildingIgnition();
-  renderParticles();
-  renderSmoke();
-  renderVentIcons();
-  render();
+
+  // 입자 렌더는 짝수 프레임만 (map.project 호출 50% 절감)
+  if (frameCount % 2 === 0) {
+    renderParticles();
+    renderSmoke();
+    renderVentIcons();
+  }
+  render();   // 합성은 매 프레임 (화면 끊김 방지)
+
+  _updateSunDeckLayer();
+  // 태양 플레어: 짝수 프레임만 (위치 변화가 미미해 30fps로 충분)
+  if (frameCount % 2 === 0) _drawSunFlareFrame();
+  _tickExposure();
   frameCount++;
 
-  // 난류 실시간 애니메이션: buildLookup을 주기적으로 재실행해 컬 노이즈 패턴 변경
-  // 풍속이 강할수록 더 자주 갱신 (빠른 난류), 약할수록 느리게 (잔잔한 흐름)
+  // 난류 buildLookup: 최소 90프레임(1.5초) 간격으로 제한 (기존 30프레임 대비 3배 절감)
   if (engine.hasData) {
-    const spd  = engine.maxSpeedMs;                              // 현재 최대 풍속
-    const rate = Math.max(30, Math.round(180 - spd * 12));      // 3~12m/s → 180~36프레임
+    const spd  = engine.maxSpeedMs;
+    const rate = Math.max(90, Math.round(180 - spd * 12));   // 최소 90프레임
     if (frameCount % rate === 0) {
       engine.buildLookup(map, dpr, _autoSpeedScale * params.speedMult, params.noiseAmt);
     }
   }
 
-  if (frameCount % 300 === 0) {
+  // GUI 갱신: 600프레임(10초)마다 — 300에서 완화 (DOM 조작 비용)
+  if (frameCount % 600 === 0) {
     autoInfo.elevation = engine.hasElevation ? '✓ 활성' : '⏳ 로딩';
     gui.controllersRecursive().forEach(c => c.updateDisplay());
-    console.log(`[TerrainSim] f=${frameCount} maxSpd=${engine.maxSpeedMs.toFixed(1)}m/s elev=${engine.hasElevation}`);
   }
 }
 
