@@ -1301,8 +1301,8 @@ function renderParticles() {
     const s = engine.spd[i];
     if (s < 0.012) continue;
 
-    const pp = map.project([engine.plng[i], engine.plat[i]]);
-    const cp = map.project([engine.lng[i],  engine.lat[i]]);
+    const pp = _fastProject(engine.plng[i], engine.plat[i]);
+    const cp = _fastProject(engine.lng[i],  engine.lat[i]);
     const x0 = pp.x * dpr, y0 = pp.y * dpr;
     const x1 = cp.x * dpr, y1 = cp.y * dpr;
 
@@ -1347,11 +1347,11 @@ function renderVentIcons() {
   _ventPulse += 0.05;
 
   for (const vent of engine.vents) {
-    const pos = map.project([vent.lng, vent.lat]);
+    const pos = _fastProject(vent.lng, vent.lat);
     const cx  = pos.x * dpr, cy = pos.y * dpr;
 
     // 영향 반경 원 (희미하게) — 성장 애니메이션 반영
-    const sigPx = _metersToScreenPx(engine._effectiveSigma(vent), vent.lat) * dpr;
+    const sigPx = _fastMetersToScreenPx(engine._effectiveSigma(vent), vent.lat) * dpr;
     if (sigPx < 600 * dpr) {  // 너무 크면 생략
       ventCtx.beginPath();
       ventCtx.arc(cx, cy, sigPx, 0, Math.PI * 2);
@@ -1469,7 +1469,7 @@ function _checkBuildingIgnition() {
   }
 }
 
-/** 미터 거리 → 현재 줌의 CSS px 변환 */
+/** 미터 거리 → 현재 줌의 CSS px 변환 (정확, 비용 큼 — 핫패스에서는 _fastMetersToScreenPx 사용) */
 function _metersToScreenPx(meters, lat) {
   const cosLat = Math.cos(lat * Math.PI / 180);
   const dLng   = meters / (111320 * cosLat);
@@ -1477,6 +1477,28 @@ function _metersToScreenPx(meters, lat) {
   const pA     = map.project([ctr.lng,        ctr.lat]);
   const pB     = map.project([ctr.lng + dLng,  ctr.lat]);
   return Math.abs(pB.x - pA.x);
+}
+
+/**
+ * map.project()의 Jacobian 선형 근사 — 렌더링 핫패스용 (map.project 대비 ~100× 빠름)
+ * buildLookup 후에만 정확. 뷰포트 내 입자 시각화에는 충분한 정밀도.
+ */
+function _fastProject(lng, lat) {
+  if (!engine._J00 && !engine._J01) return map.project([lng, lat]);
+  return {
+    x: engine._p0x + engine._J00 * (lng - engine._cLng) + engine._J01 * (lat - engine._cLat),
+    y: engine._p0y + engine._J10 * (lng - engine._cLng) + engine._J11 * (lat - engine._cLat),
+  };
+}
+
+/**
+ * _metersToScreenPx의 빠른 버전 — map.project() 2회 대신 Jacobian 스칼라 연산
+ * 수식: screenPx = |J00| × meters / (111320 × cos(lat))
+ */
+function _fastMetersToScreenPx(meters, lat) {
+  if (!engine._J00) return _metersToScreenPx(meters, lat);
+  const cosLat = Math.cos(lat * Math.PI / 180);
+  return Math.abs(engine._J00) * meters / (111320 * cosLat);
 }
 
 // ── 메인 렌더 ────────────────────────────────────────────────────────────────
@@ -2050,24 +2072,28 @@ function renderSmoke() {
 
   const tf = _timeLightFactor();
 
+  // ── 패스 1: source-over (가스 + 연기 기둥) ─────────────────────────────────
+  // compositor 모드를 루프 밖에서 1회만 설정 (패스당 1회 → GPU 상태 변경 최소화)
+  smokeCtx.globalCompositeOperation = 'source-over';
   for (let i = 0; i < engine.smokeCount; i++) {
     if (engine.sAge[i] >= engine.sLife[i]) continue;
     const alpha = engine.sAlpha[i];
     if (alpha < 0.016) continue;
 
-    const mode   = engine.sModeArr[i];
-    const z      = engine.sZ[i];
+    const mode = engine.sModeArr[i];
+    const z    = engine.sZ[i];
+    // 화염 입자(mode===1, z<25)는 패스 2에서 처리
+    if (mode === 1 && z < 25) continue;
+
     const conc   = engine.sConc[i];
     const growth = engine.sGrowth[i];
 
-    // map.project → 화면 픽셀 (lng/lat만 사용, 고도 변위 없음)
-    const sp = map.project([engine.sLng[i], engine.sLat[i]]);
+    // _fastProject: map.project() 대신 Jacobian 선형 근사 (≈100× 빠름)
+    const sp = _fastProject(engine.sLng[i], engine.sLat[i]);
     const sx = sp.x * dpr, sy = sp.y * dpr;
 
-    // 화면 밖 클리핑
     if (sx < -300 || sx > sw + 300 || sy < -300 || sy > sh + 300) continue;
 
-    // 입자별 크기 노이즈 (0.78~1.22, 황금비 수열)
     const sNoise = 0.78 + 0.44 * ((i * 0.61803 + engine.sAge[i] * 0.01) % 1);
 
     if (mode === 0) {
@@ -2075,7 +2101,7 @@ function renderSmoke() {
       if (conc < 0.006) continue;
       const dilute  = 1 - Math.min(1, conc * 1.15);
       const radiusM = (5 + dilute * 24 + z * 0.22 + growth * 7) * sNoise;
-      const rPx     = Math.max(1, _metersToScreenPx(radiusM, engine.sLat[i]) * dpr);
+      const rPx     = Math.max(1, _fastMetersToScreenPx(radiusM, engine.sLat[i]) * dpr);
 
       const aNight = _nightGasAlpha(conc, tf.gas);
       const a      = Math.min(0.82, alpha * aNight * (0.50 + conc * 0.85));
@@ -2091,32 +2117,11 @@ function renderSmoke() {
       smokeCtx.arc(sx, sy, rPx, 0, Math.PI * 2);
       smokeCtx.fill();
 
-    } else if (z < 25) {
-      // ── FLAME (가산혼합) ──────────────────────────────────────────────────
-      const growF   = 0.18 + 0.82 * growth;
-      const radiusM = (3 + z * 1.15 + growth * 9) * growF * sNoise;
-      const rPx     = Math.max(1, _metersToScreenPx(radiusM, engine.sLat[i]) * dpr);
-
-      const a = Math.min(0.90, alpha * tf.flame * (0.62 + (1 - z / 25) * 0.42));
-      const [r, g, b] = _dkFlameRGB(z);
-
-      smokeCtx.globalCompositeOperation = 'lighter';
-      const gr = smokeCtx.createRadialGradient(sx, sy, 0, sx, sy, rPx);
-      gr.addColorStop(0.00, `rgba(${r},${g},${b},${a.toFixed(3)})`);
-      gr.addColorStop(0.38, `rgba(${r},${g},${b},${(a*0.60).toFixed(3)})`);
-      gr.addColorStop(0.68, `rgba(${r},${g},${b},${(a*0.18).toFixed(3)})`);
-      gr.addColorStop(1.00, `rgba(${r},${g},${b},0)`);
-      smokeCtx.fillStyle = gr;
-      smokeCtx.beginPath();
-      smokeCtx.arc(sx, sy, rPx, 0, Math.PI * 2);
-      smokeCtx.fill();
-      smokeCtx.globalCompositeOperation = 'source-over';
-
     } else {
-      // ── SMOKE (연기 기둥) ─────────────────────────────────────────────────
+      // ── SMOKE (연기 기둥, mode===1 && z>=25) ──────────────────────────────
       const smokeT  = Math.min(1, (z - 25) / 110);
       const radiusM = (16 + (z - 25) * 0.7 + growth * 20) * sNoise;
-      const rPx     = Math.max(2, _metersToScreenPx(radiusM, engine.sLat[i]) * dpr);
+      const rPx     = Math.max(2, _fastMetersToScreenPx(radiusM, engine.sLat[i]) * dpr);
 
       const a = Math.min(0.75, alpha * tf.smoke * (0.88 - smokeT * 0.38));
       if (a < 0.022) continue;
@@ -2135,13 +2140,49 @@ function renderSmoke() {
     }
   }
 
-  // ── 지면 글로우 (화재 발원지 주변 — 가산혼합 큰 원) ─────────────────────────
+  // ── 패스 2: lighter / 가산혼합 (화염 기저 + 지면 글로우) ─────────────────────
+  // compositor를 패스 시작 시 1회만 전환
+  smokeCtx.globalCompositeOperation = 'lighter';
+
+  for (let i = 0; i < engine.smokeCount; i++) {
+    if (engine.sAge[i] >= engine.sLife[i]) continue;
+    if (engine.sModeArr[i] !== 1) continue;          // 화재 입자만
+    const z = engine.sZ[i];
+    if (z >= 25) continue;                           // 화염 기저만 (연기 기둥 제외)
+    const alpha = engine.sAlpha[i];
+    if (alpha < 0.016) continue;
+
+    const growth = engine.sGrowth[i];
+    const sp = _fastProject(engine.sLng[i], engine.sLat[i]);
+    const sx = sp.x * dpr, sy = sp.y * dpr;
+
+    if (sx < -300 || sx > sw + 300 || sy < -300 || sy > sh + 300) continue;
+
+    const sNoise  = 0.78 + 0.44 * ((i * 0.61803 + engine.sAge[i] * 0.01) % 1);
+    const growF   = 0.18 + 0.82 * growth;
+    const radiusM = (3 + z * 1.15 + growth * 9) * growF * sNoise;
+    const rPx     = Math.max(1, _fastMetersToScreenPx(radiusM, engine.sLat[i]) * dpr);
+
+    const a = Math.min(0.90, alpha * tf.flame * (0.62 + (1 - z / 25) * 0.42));
+    const [r, g, b] = _dkFlameRGB(z);
+
+    const gr = smokeCtx.createRadialGradient(sx, sy, 0, sx, sy, rPx);
+    gr.addColorStop(0.00, `rgba(${r},${g},${b},${a.toFixed(3)})`);
+    gr.addColorStop(0.38, `rgba(${r},${g},${b},${(a*0.60).toFixed(3)})`);
+    gr.addColorStop(0.68, `rgba(${r},${g},${b},${(a*0.18).toFixed(3)})`);
+    gr.addColorStop(1.00, `rgba(${r},${g},${b},0)`);
+    smokeCtx.fillStyle = gr;
+    smokeCtx.beginPath();
+    smokeCtx.arc(sx, sy, rPx, 0, Math.PI * 2);
+    smokeCtx.fill();
+  }
+
+  // ── 지면 글로우 (화재 발원지 주변 — 패스 2와 동일 lighter 모드 유지) ──────────
   if (engine.fireMode && engine.vents.length > 0) {
-    smokeCtx.globalCompositeOperation = 'lighter';
     for (const vent of engine.vents) {
-      const vp   = map.project([vent.lng, vent.lat]);
+      const vp   = _fastProject(vent.lng, vent.lat);
       const vx   = vp.x * dpr, vy = vp.y * dpr;
-      const glRPx = Math.max(30, _metersToScreenPx(90, vent.lat) * dpr);
+      const glRPx = Math.max(30, _fastMetersToScreenPx(90, vent.lat) * dpr);
       const gr   = smokeCtx.createRadialGradient(vx, vy, 0, vx, vy, glRPx);
       gr.addColorStop(0.0, 'rgba(255,80,10,0.12)');
       gr.addColorStop(0.5, 'rgba(255,50,5,0.05)');
@@ -2151,8 +2192,9 @@ function renderSmoke() {
       smokeCtx.arc(vx, vy, glRPx, 0, Math.PI * 2);
       smokeCtx.fill();
     }
-    smokeCtx.globalCompositeOperation = 'source-over';
   }
+
+  smokeCtx.globalCompositeOperation = 'source-over';
 
   // MapLibre 건물 반사광 보정 (발화 상태 변화 시만 실행)
   _updateFireLight();

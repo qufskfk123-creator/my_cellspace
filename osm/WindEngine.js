@@ -72,6 +72,12 @@ export class WindEngine {
     this._Ji00 = 0; this._Ji01 = 0;
     this._Ji10 = 0; this._Ji11 = 0;
 
+    // ── 순방향 야코비안 + 화면 중심 캐시 (렌더링 좌표 변환용) ──────────────────
+    // buildLookup 실행 후 채워짐 → _fastProject / _fastMetersToScreenPx에서 사용
+    this._J00 = 0; this._J01 = 0; this._J10 = 0; this._J11 = 0;
+    this._p0x = 0; this._p0y = 0;   // 화면 중심 CSS픽셀
+    this._cLng = 0; this._cLat = 0; // buildLookup 당시 지도 중심 지리좌표
+
     // ── 컬 노이즈 ────────────────────────────────────────────────────────────
     this._noiseT = 0;
 
@@ -567,6 +573,11 @@ export class WindEngine {
     const Ji00 =  J11/det, Ji01 = -J01/det;
     const Ji10 = -J10/det, Ji11 =  J00/det;
     this._Ji00=Ji00; this._Ji01=Ji01; this._Ji10=Ji10; this._Ji11=Ji11;
+
+    // 순방향 야코비안 + 화면 중심 저장 (렌더 핫패스의 map.project 대체용)
+    this._J00=J00; this._J01=J01; this._J10=J10; this._J11=J11;
+    this._p0x=p0.x; this._p0y=p0.y;
+    this._cLng=ctr.lng; this._cLat=ctr.lat;
 
     const latRad     = ctr.lat * Math.PI / 180;
     const mPerDegLng = 111320 * Math.cos(latRad);
